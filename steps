@@ -1,0 +1,262 @@
+SHOPSPHERE — STEPS EXPLAINED 
+==============================================
+
+This document explains every step in the `steps` file in plain language,
+so you understand *why* each command exists and can recreate a similar
+project yourself.
+
+---
+
+PREREQUISITES — What you need installed before you start
+---------------------------------------------------------
+
+  - Docker         → builds your code into a portable package (image)
+  - kubectl        → the command-line tool to talk to Kubernetes
+  - eksctl         → a tool that creates/manages EKS clusters easily
+  - AWS CLI        → lets your terminal talk to AWS services
+  - AWS Load Balancer Controller prereqs → IAM policy + OIDC provider
+    (these are one-time AWS account setups; the steps show how)
+
+WHY: Without these tools installed, your computer cannot build images,
+connect to AWS, or control a Kubernetes cluster.
+
+---
+
+STEP 1 — BUILD AND PUSH DOCKER IMAGES TO DOCKERHUB
+----------------------------------------------------
+
+  # Build each service
+  docker build -t bigkola1/easy-gateway:latest ./api-gateway
+  docker build -t bigkola1/easy-frontend:latest ./frontend
+  docker build -t bigkola1/easy-user-service:latest ./user-service
+  docker build -t bigkola1/easy-product-service:latest ./product-service
+  docker build -t bigkola1/easy-order-service:latest ./order-service
+
+EXPLANATION:
+  - `docker build` reads a Dockerfile in each service folder and creates
+    a Docker image (a ready-to-run package of code + dependencies).
+  - `-t bigkola1/gateway:latest` gives the image a name:
+       bigkola1     = your DockerHub username (change to yours)
+       gateway      = service name
+       latest       = version tag (you could use v1.0.0 instead)
+  - The final argument `./api-gateway` tells Docker where the Dockerfile is.
+
+  # Push to DockerHub
+  docker push bigkola1/easy-gateway:latest
+  docker push bigkola1/easy-frontend:latest
+  docker push bigkola1/easy-user-service:latest
+  docker push bigkola1/easy-product-service:latest
+  docker push bigkola1/easy-order-service:latest
+
+EXPLANATION:
+  - `docker push` uploads the built image to DockerHub (a free registry).
+  - Kubernetes (in AWS) will later download these images from there.
+  - You must run `docker login` once beforehand so DockerHub knows who you are.
+
+---
+
+STEP 2 — CREATE EKS CLUSTER
+-----------------------------
+
+  eksctl create cluster \
+    --name shopsphere-cluster \
+    --region us-east-2 \
+    --nodegroup-name standard-workers \
+    --node-type t3.medium \
+    --nodes 3 \
+    --nodes-min 2 \
+    --nodes-max 6 \
+    --managed
+
+EXPLANATION:
+  - This single command creates a full Kubernetes cluster in AWS.
+  - eksctl calls AWS CloudFormation behind the scenes to set up:
+      - VPC (virtual network), subnets, security groups
+      - An EKS control plane (the brain of Kubernetes, managed by AWS)
+      - A node group (EC2 virtual machines that run your containers)
+  - Flags explained:
+    --name              = what you call your cluster
+    --region            = which AWS data centre (us-east-2 = ohio)
+    --nodegroup-name    = a label for your group of worker machines
+    --node-type t3.medium = each worker is a t3.medium EC2 instance
+                             (2 CPU, 4 GB RAM — good for small apps)
+    --nodes 3           = start with 3 workers
+    --nodes-min 2       = at least 2 workers (for redundancy)
+    --nodes-max 6       = can auto-scale up to 6 if traffic increases
+    --managed           = AWS manages the node group (easier updates)
+
+  # Update kubeconfig (if needed)
+  aws eks update-kubeconfig --region us-east-2 --name shopsphere-cluster
+
+EXPLANATION:
+  - This tells kubectl how to connect to your new cluster.
+  - It writes the cluster's address and authentication token to your
+    ~/.kube/config file. After this, `kubectl get nodes` works.
+
+---
+
+STEP 3 — INSTALL AWS LOAD BALANCER CONTROLLER
+-----------------------------------------------
+
+  # Create IAM OIDC provider (if not already done)
+  eksctl utils associate-iam-oidc-provider --region us-east-2 --cluster shopsphere-cluster
+
+EXPLANATION:
+  - This lets the cluster "prove its identity" to AWS.
+  - OIDC (OpenID Connect) is a trust relationship: your cluster can
+    request temporary AWS credentials for specific pods (e.g. the
+    Load Balancer Controller) without storing secret keys.
+  - Must be done once per cluster.
+
+  # Download and apply the ALB controller policy
+  curl -O https://raw.githubusercontent.com/kubernetes-sigs/aws-load-balancer-controller/v2.12.0/docs/install/iam_policy.json
+  aws iam create-policy \
+    --policy-name AWSLoadBalancerControllerIAMPolicy \
+    --policy-document file://iam_policy.json
+
+EXPLANATION:
+  - Downloads the exact permissions the Load Balancer Controller needs.
+  - Creates an IAM Policy (a list of API actions it's allowed to do,
+    like `elasticloadbalancing:CreateLoadBalancer`).
+  - This policy will be attached to the controller's service account.
+
+  # Create a service account for the controller
+  eksctl create iamserviceaccount \
+    --cluster shopsphere-cluster \
+    --namespace kube-system \
+    --name aws-load-balancer-controller \
+    --role-name AmazonEKSLoadBalancerControllerRole \
+    --attach-policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/AWSLoadBalancerControllerIAMPolicy \
+    --approve
+
+EXPLANATION:
+  - A Kubernetes Service Account + an IAM Role are created together.
+  - The pod (Load Balancer Controller) will assume this role to call
+    AWS APIs (like creating an ALB).
+  - This is the secure way to give AWS permissions to a pod without
+    hard-coding any keys.
+
+  # Install the ALB controller via Helm
+  helm repo add eks https://aws.github.io/eks-charts
+  helm repo update
+  helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+    --namespace kube-system \
+    --set clusterName=shopsphere-cluster \
+    --set serviceAccount.create=false \
+    --set serviceAccount.name=aws-load-balancer-controller
+
+EXPLANATION:
+  - Helm is a package manager for Kubernetes (like apt for Linux).
+  - This command installs the ALB Controller as a pod in your cluster.
+  - The controller watches for Kubernetes Ingress resources and
+    automatically provisions real AWS Application Load Balancers.
+  - serviceAccount.create=false + serviceAccount.name=... tells it to
+    use the IAM service account we just created (not create a new one).
+
+  # Verify it's running
+  kubectl get deployment -n kube-system aws-load-balancer-controller
+
+EXPLANATION:
+  - Quick check that the controller pod is deployed and running.
+  - You should see 1/1 READY.
+
+---
+
+STEP 4 — DEPLOY THE APPLICATION
+---------------------------------
+
+  # Create the namespace first
+  kubectl apply -f k8s/namespace.yaml
+
+EXPLANATION:
+  - A namespace is a virtual folder inside Kubernetes that keeps
+    resources organised. All our services will live in the `shopsphere`
+    namespace, separate from system components (which are in `kube-system`).
+  - This must run *before* the next command, otherwise the YAML files
+    that reference `namespace: shopsphere` would fail.
+
+  # Deploy everything else
+  kubectl apply -f k8s/ -n shopsphere
+
+EXPLANATION:
+  - `kubectl apply -f k8s/` reads ALL YAML files in the k8s/ directory
+    and creates the described resources (Deployments, Services, Ingress).
+  - `-n shopsphere` ensures they land in the right namespace.
+  - What gets created (based on the files in k8s/):
+    - 5 Deployments (api-gateway, frontend, user-service, product-service,
+      order-service) — these define which Docker image to run, how many
+      replicas, ports, environment variables, etc.
+    - 5 ClusterIP Services — internal DNS names so services can talk to
+      each other within the cluster.
+    - 1 Ingress — a rule that says "traffic from the internet goes to
+      the api-gateway and frontend services".
+
+---
+
+STEP 5 — VERIFY DEPLOYMENT
+----------------------------
+
+  kubectl get pods -n shopsphere -w
+
+EXPLANATION:
+  - Lists all pods (running containers) in the shopsphere namespace.
+  - `-w` (watch) keeps the command running and updates live.
+  - Wait until all pods show `Running` and `1/1` ready.
+
+  kubectl get svc -n shopsphere
+
+EXPLANATION:
+  - Lists Services (the internal DNS endpoints). Each service should
+    have a CLUSTER-IP assigned.
+
+  kubectl get ingress -n shopsphere -w
+
+EXPLANATION:
+  - Shows the Ingress resource. The ADDRESS column will eventually show
+    a DNS name like `xxxxxxxx-xxxxxx.us-east-2.elb.amazonaws.com`.
+  - This is the AWS Application Load Balancer DNS.
+  - Provisioning takes 1–2 minutes; the `-w` flag waits for it.
+
+  curl http://<ALB-DNS-NAME>/
+
+EXPLANATION:
+  - Once the ALB DNS appears, these curl commands test each endpoint.
+  - If you get a response, your app is live on the internet.
+
+  kubectl logs -n shopsphere deployment/api-gateway
+
+EXPLANATION:
+  - Shows the recent log output of a deployment's pod(s).
+  - If something is wrong (pods crashing, 503 errors), logs are the
+    first place to look.
+
+  kubectl describe pod -n shopsphere -l app=api-gateway
+
+EXPLANATION:
+  - `describe pod` gives detailed info: container state, restart count,
+    events (why it failed), resource limits, mounted volumes, etc.
+  - `-l app=api-gateway` selects pods with that label.
+  - Great for debugging crashes or configuration issues.
+
+---
+
+STEP 6 — TEAR DOWN (WHEN DONE)
+--------------------------------
+
+  kubectl delete -f k8s/ -n shopsphere
+  kubectl delete -f k8s/namespace.yaml
+
+EXPLANATION:
+  - Deletes all Deployments, Services, Ingress, etc. from the cluster.
+  - Then deletes the namespace itself.
+  - Your apps are gone, but the EKS cluster still exists (and costs money).
+
+  eksctl delete cluster --name shopsphere-cluster --region us-east-2
+
+EXPLANATION:
+  - Destroys the entire EKS cluster: all EC2 instances, the VPC, subnets,
+    security groups, and the control plane.
+  - This stops all AWS charges for the cluster.
+
+---
+

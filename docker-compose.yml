@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: easyhomes-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+
+  product-service:
+    build: ./product-service
+    container_name: easyhomes-product-service
+    ports:
+      - "3001:3001"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/easyhomes
+      - PORT=3001
+    depends_on:
+      - mongo
+
+  order-service:
+    build: ./order-service
+    container_name: easyhomes-order-service
+    ports:
+      - "3002:3002"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/easyhomes
+      - PORT=3002
+    depends_on:
+      - mongo
+
+  user-service:
+    build: ./user-service
+    container_name: easyhomes-user-service
+    ports:
+      - "3003:3003"
+    environment:
+      - MONGO_URI=mongodb://mongo:27017/easyhomes
+      - PORT=3003
+      - JWT_SECRET=easyhomes_secret_key_change_in_production
+    depends_on:
+      - mongo
+
+  api-gateway:
+    build: ./api-gateway
+    container_name: easyhomes-api-gateway
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+      - PRODUCT_SERVICE=http://product-service:3001
+      - ORDER_SERVICE=http://order-service:3002
+      - USER_SERVICE=http://user-service:3003
+    depends_on:
+      - product-service
+      - order-service
+      - user-service
+
+  frontend:
+    build: ./frontend
+    container_name: easyhomes-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - api-gateway
+
+volumes:
+  mongo-data:
