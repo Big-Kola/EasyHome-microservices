@@ -1,4 +1,4 @@
-SHOPSPHERE — STEPS EXPLAINED 
+easyhomes — STEPS EXPLAINED 
 ==============================================
 
 This document explains every step in the `steps` file in plain language,
@@ -59,13 +59,13 @@ STEP 2 — CREATE EKS CLUSTER
 -----------------------------
 
   eksctl create cluster \
-    --name shopsphere-cluster \
+    --name easyhomes-cluster \
     --region us-east-2 \
     --nodegroup-name standard-workers \
     --node-type t3.medium \
-    --nodes 3 \
-    --nodes-min 2 \
-    --nodes-max 6 \
+    --nodes 1 \
+    --nodes-min 1 \
+    --nodes-max 2 \
     --managed
 
 EXPLANATION:
@@ -86,7 +86,7 @@ EXPLANATION:
     --managed           = AWS manages the node group (easier updates)
 
   # Update kubeconfig (if needed)
-  aws eks update-kubeconfig --region us-east-2 --name shopsphere-cluster
+  aws eks update-kubeconfig --region us-east-2 --name easyhomes-cluster
 
 EXPLANATION:
   - This tells kubectl how to connect to your new cluster.
@@ -99,7 +99,7 @@ STEP 3 — INSTALL AWS LOAD BALANCER CONTROLLER
 -----------------------------------------------
 
   # Create IAM OIDC provider (if not already done)
-  eksctl utils associate-iam-oidc-provider --region us-east-2 --cluster shopsphere-cluster
+  eksctl utils associate-iam-oidc-provider --region us-east-2 --cluster easyhomes-cluster
 
 EXPLANATION:
   - This lets the cluster "prove its identity" to AWS.
@@ -122,12 +122,13 @@ EXPLANATION:
 
   # Create a service account for the controller
   eksctl create iamserviceaccount \
-    --cluster shopsphere-cluster \
+    --cluster easyhomes-cluster \
     --namespace kube-system \
     --name aws-load-balancer-controller \
     --role-name AmazonEKSLoadBalancerControllerRole \
     --attach-policy-arn arn:aws:iam::<ACCOUNT_ID>:policy/AWSLoadBalancerControllerIAMPolicy \
     --approve
+
 
 EXPLANATION:
   - A Kubernetes Service Account + an IAM Role are created together.
@@ -141,7 +142,7 @@ EXPLANATION:
   helm repo update
   helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
     --namespace kube-system \
-    --set clusterName=shopsphere-cluster \
+    --set clusterName=easyhomes-cluster \
     --set serviceAccount.create=false \
     --set serviceAccount.name=aws-load-balancer-controller
 
@@ -170,18 +171,18 @@ STEP 4 — DEPLOY THE APPLICATION
 
 EXPLANATION:
   - A namespace is a virtual folder inside Kubernetes that keeps
-    resources organised. All our services will live in the `shopsphere`
+    resources organised. All our services will live in the `easyhomes`
     namespace, separate from system components (which are in `kube-system`).
   - This must run *before* the next command, otherwise the YAML files
-    that reference `namespace: shopsphere` would fail.
+    that reference `namespace: easyhomes` would fail.
 
   # Deploy everything else
-  kubectl apply -f k8s/ -n shopsphere
+  kubectl apply -f k8s/ -n easyhomes
 
 EXPLANATION:
   - `kubectl apply -f k8s/` reads ALL YAML files in the k8s/ directory
     and creates the described resources (Deployments, Services, Ingress).
-  - `-n shopsphere` ensures they land in the right namespace.
+  - `-n easyhomes` ensures they land in the right namespace.
   - What gets created (based on the files in k8s/):
     - 5 Deployments (api-gateway, frontend, user-service, product-service,
       order-service) — these define which Docker image to run, how many
@@ -196,20 +197,20 @@ EXPLANATION:
 STEP 5 — VERIFY DEPLOYMENT
 ----------------------------
 
-  kubectl get pods -n shopsphere -w
+  kubectl get pods -n easyhomes -w
 
 EXPLANATION:
-  - Lists all pods (running containers) in the shopsphere namespace.
+  - Lists all pods (running containers) in the easyhomes namespace.
   - `-w` (watch) keeps the command running and updates live.
   - Wait until all pods show `Running` and `1/1` ready.
 
-  kubectl get svc -n shopsphere
+  kubectl get svc -n easyhomes
 
 EXPLANATION:
   - Lists Services (the internal DNS endpoints). Each service should
     have a CLUSTER-IP assigned.
 
-  kubectl get ingress -n shopsphere -w
+  kubectl get ingress -n easyhomes -w
 
 EXPLANATION:
   - Shows the Ingress resource. The ADDRESS column will eventually show
@@ -217,20 +218,20 @@ EXPLANATION:
   - This is the AWS Application Load Balancer DNS.
   - Provisioning takes 1–2 minutes; the `-w` flag waits for it.
 
-  curl http://<ALB-DNS-NAME>/
+  curl http://<ALB-DNS-NAME>/  
 
 EXPLANATION:
   - Once the ALB DNS appears, these curl commands test each endpoint.
   - If you get a response, your app is live on the internet.
 
-  kubectl logs -n shopsphere deployment/api-gateway
+  kubectl logs -n easyhomes deployment/api-gateway
 
 EXPLANATION:
   - Shows the recent log output of a deployment's pod(s).
   - If something is wrong (pods crashing, 503 errors), logs are the
     first place to look.
 
-  kubectl describe pod -n shopsphere -l app=api-gateway
+  kubectl describe pod -n easyhomes -l app=api-gateway
 
 EXPLANATION:
   - `describe pod` gives detailed info: container state, restart count,
@@ -243,7 +244,7 @@ EXPLANATION:
 STEP 6 — TEAR DOWN (WHEN DONE)
 --------------------------------
 
-  kubectl delete -f k8s/ -n shopsphere
+  kubectl delete -f k8s/ -n easyhomes
   kubectl delete -f k8s/namespace.yaml
 
 EXPLANATION:
@@ -251,7 +252,7 @@ EXPLANATION:
   - Then deletes the namespace itself.
   - Your apps are gone, but the EKS cluster still exists (and costs money).
 
-  eksctl delete cluster --name shopsphere-cluster --region us-east-2
+  eksctl delete cluster --name easyhomes-cluster --region us-east-2
 
 EXPLANATION:
   - Destroys the entire EKS cluster: all EC2 instances, the VPC, subnets,
