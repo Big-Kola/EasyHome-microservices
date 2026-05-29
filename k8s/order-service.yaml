@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: order-service
-          image: easyhomes/order-service:latest
+          image: 811800851991.dkr.ecr.us-east-2.amazonaws.com/easyhomes/order-service:latest
           ports:
             - containerPort: 3002
           env:

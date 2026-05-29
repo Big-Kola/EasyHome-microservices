@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: user-service
-          image: easyhomes/user-service:latest
+          image: 811800851991.dkr.ecr.us-east-2.amazonaws.com/easyhomes/user-service:latest
           ports:
             - containerPort: 3003
           env:

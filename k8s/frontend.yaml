@@ -15,7 +15,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: easyhomes/frontend:latest
+          image: 811800851991.dkr.ecr.us-east-2.amazonaws.com/easyhomes/frontend:latest
           ports:
             - containerPort: 80
 ---
